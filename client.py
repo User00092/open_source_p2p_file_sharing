@@ -11,12 +11,15 @@ from tkinter import filedialog
 import qrcode
 from PIL import ImageTk
 import fastapi
+import dotenv
+
+dotenv.load_dotenv()
 
 from lib.utils import find_free_port
 
 import base64
-# p2pfiles.provolance.com
-TRACKER_URL = 'http://localhost:8080/fileshare'
+#
+TRACKER_URL = 'https://p2pfiles.provolance.com/fileshare'
 
 app = fastapi.FastAPI()
 
@@ -30,7 +33,7 @@ class FileShareApp(ctk.CTk):
         # Initialize variables
         self.filepath = None
         self.qr_code_image = None
-        self.port = 51321 or find_free_port()  # You can change the port if needed
+        self.port = int(os.environ.get("ACCESS_PORT", find_free_port()))
         self.shared_files = {}  # Store shared files with their IDs
         self.url = None
 

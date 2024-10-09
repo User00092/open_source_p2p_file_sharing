@@ -93,9 +93,12 @@ async def fileshare(file_id):
             try:
                 with requests.get(download_url, stream=True) as resp:
                     resp.raise_for_status()
-                    for chunk in resp.iter_content(4512):
+                    for chunk in resp.iter_content(5412):  # Adjusted chunk size
                         decrypted_chunk = decrypt(decrypting_key, chunk)
                         yield decrypted_chunk
+
+            except Exception as e:
+                print(f"Error generating payload: {e}")
 
             except Exception as e:
                 print(
