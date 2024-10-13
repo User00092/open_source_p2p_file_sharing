@@ -1,3 +1,5 @@
+import asyncio
+
 from lib.security.cryption import generate_keypair, encrypt
 
 import requests
@@ -18,8 +20,9 @@ dotenv.load_dotenv()
 from lib.utils import find_free_port
 
 import base64
-#
-TRACKER_URL = 'https://p2pfiles.provolance.com/fileshare'
+
+
+TRACKER_URL = os.environ.get('TRACKER_URL', 'https://p2pfiles.provolance.com/fileshare')
 
 app = fastapi.FastAPI()
 
@@ -200,17 +203,20 @@ class FileShareApp(ctk.CTk):
                 async def generate() -> AsyncGenerator[bytes, None]:
                     with open(file_path, 'rb') as file:
                         while True:
+                            # await asyncio.sleep(0.01)
                             chunk = file.read(4096)
                             if not chunk:
                                 break
 
                             encrypted_chunk = encrypt(encrypting_key, chunk)
+
+                            if self.server_stop_event.is_set() or not self.shared_files.get(file_id):
+                                print("Server has stopped or file is not being shared anymore")
+                                break
+
                             yield encrypted_chunk
 
-                return fastapi.responses.StreamingResponse(generate(), media_type='application/octet-stream', headers={
-                    'Content-Disposition': f'attachment; filename="{os.path.basename(file_path)}"',
-                    # 'Content-Length': str(os.path.getsize(file_path))
-                })
+                return fastapi.responses.StreamingResponse(generate(), media_type='application/octet-stream')
             else:
                 return JSONResponse(status_code=404, content={"detail": "File not found"})
 

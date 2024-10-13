@@ -1,3 +1,5 @@
+import os
+
 import fastapi
 import requests
 from typing import AsyncGenerator
@@ -5,13 +7,15 @@ from typing import AsyncGenerator
 import uvicorn
 import asyncio
 import json
+import aiohttp
 
 import base64
-
+import threading
 from fastapi import HTTPException, status
 
 from lib.security.cryption import generate_keypair, decrypt
 fastapp = fastapi.FastAPI()
+STOP_EVENT = threading.Event()
 
 # Data structure to hold file_id to set of download URLs
 file_peers = dict()
@@ -81,35 +85,35 @@ async def fileshare(file_id):
 
     # Fetch file from the peer and stream it to the client
     try:
-        exists_response = requests.get(download_url + "/exists")
-        if exists_response.status_code != 200:
-            raise Exception("Invalid response from peer")
-
-        exists_data = exists_response.json()
-        if not exists_data.get("exists"):
-            raise Exception("File does not exist on peer")
+        with requests.get(download_url + "/exists") as exists_response:
+            if exists_response.status_code != 200:
+                raise Exception("Invalid response from peer")
+            exists_data = exists_response.json()
+            if not exists_data.get("exists"):
+                raise Exception("File does not exist on peer")
 
         async def generate() -> AsyncGenerator[bytes, None]:
             try:
                 with requests.get(download_url, stream=True) as resp:
                     resp.raise_for_status()
-                    for chunk in resp.iter_content(5412):  # Adjusted chunk size
+                    for chunk in resp.iter_content(None):
+                        if not chunk:
+                            break
+
                         decrypted_chunk = decrypt(decrypting_key, chunk)
+
+                        if not decrypted_chunk or STOP_EVENT.is_set():
+                            print(f"Stopping the file share of {file_id}")
+                            break
+
                         yield decrypted_chunk
 
             except Exception as e:
                 print(f"Error generating payload: {e}")
 
-            except Exception as e:
-                print(
-                    "The client failed to generate a proper payload, probably due to closing the application or a "
-                    "loss of "
-                    "connection:",
-                    e
-                )
         response = fastapi.responses.StreamingResponse(generate(), media_type='application/octet-stream')
         response.headers['Content-Disposition'] = f'attachment; filename={file_name}'
-        # response.headers['Content-Length'] = str(file_size)
+        response.headers['Content-Length'] = str(file_size)
         return response
 
     except asyncio.TimeoutError:
@@ -131,7 +135,14 @@ async def global_exception_handler(request: fastapi.Request, exc: Exception):
 
 def main():
     # Run the tracker server on port 5000
-    uvicorn.run(fastapp, port=443, host='0.0.0.0', log_level="info", ssl_keyfile='./key.pem', ssl_certfile='./cert.pem')
+    ssl_keyfile = './key.pem' if os.path.exists('./key.pem') else None
+    ssl_certfile = './cert.pem' if os.path.exists('./cert.pem') else None
+    if all([ssl_keyfile, ssl_certfile]):
+        port = 443
+    else:
+        port = 8080
+
+    uvicorn.run(fastapp, port=port, host='0.0.0.0', log_level="info", ssl_keyfile=ssl_keyfile, ssl_certfile=ssl_certfile)
 
 
 if __name__ == '__main__':
