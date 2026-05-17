@@ -6,4 +6,3 @@ customtkinter>=5.2.2
 qrcode>=8.2
 pillow>=12.2.0
 python_dotenv>=1.2.2
-PySocks>=1.7.1
