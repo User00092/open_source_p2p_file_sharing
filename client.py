@@ -23,6 +23,7 @@ dotenv.load_dotenv()
 from lib.utils import find_free_port
 
 TRACKER_URL = os.environ.get('TRACKER_URL', 'https://p2pfiles.provolance.com/fileshare')
+CLIENT_HOST = os.environ.get('CLIENT_HOST', '').strip()
 _KEY_PATH = os.path.join('.', 'peer_keys', 'signing_private.der')
 
 app = fastapi.FastAPI()
@@ -143,7 +144,7 @@ class FileShareApp(ctk.CTk):
         size = os.path.getsize(self.filepath)
         timestamp = int(time.time())
 
-        message = build_registration_message(file_id, self.port, filename, size, timestamp)
+        message = build_registration_message(file_id, CLIENT_HOST, self.port, filename, size, timestamp)
         signature = sign(self._signing_private_key, message)
 
         data = {
@@ -153,6 +154,7 @@ class FileShareApp(ctk.CTk):
             'peer_public_key': base64.b64encode(self._signing_public_key).decode(),
             'signature': base64.b64encode(signature).decode(),
             'timestamp': timestamp,
+            'host': CLIENT_HOST,
         }
 
         print(f"Registering file of size {size} bytes")

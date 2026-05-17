@@ -39,9 +39,9 @@ def verify(public_key_raw: bytes, message: bytes, signature: bytes) -> bool:
         return False
 
 
-def build_registration_message(file_id: str, port: int, filename: str, size: int, timestamp: int) -> bytes:
+def build_registration_message(file_id: str, host: str, port: int, filename: str, size: int, timestamp: int) -> bytes:
     """Canonical signed payload. Must match on both client and server."""
-    return f"{file_id}:{port}:{filename}:{size}:{timestamp // 10}".encode()
+    return f"{file_id}:{host}:{port}:{filename}:{size}:{timestamp // 10}".encode()
 
 
 def save_signing_key(private_key_der: bytes, path: str) -> None:

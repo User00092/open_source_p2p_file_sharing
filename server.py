@@ -1,4 +1,5 @@
 import os
+import re
 import ssl
 import time
 import asyncio
@@ -13,6 +14,8 @@ from fastapi import HTTPException, status
 from lib.security.cryption import generate_keypair, decrypt
 from lib.security.signing import verify, build_registration_message
 from lib.network.proxy import get_proxied_session, ProxyUnavailableError
+
+_SAFE_HOST_RE = re.compile(r'^[a-zA-Z0-9.\-]{1,253}$')
 
 fastapp = fastapi.FastAPI()
 STOP_EVENT = threading.Event()
@@ -38,16 +41,13 @@ async def register_fileshare(request: fastapi.Request, file_id: str):
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-        peer_ip = request.headers.get('cf-connecting-ip', '') or (request.client.host if request.client else '')
-        if not peer_ip:
-            raise HTTPException(status_code=400, detail="Failed to resolve peer address")
-
         port = body.get('port')
         file_name = body.get('filename')
         file_size = body.get('size')
         peer_public_key_b64 = body.get('peer_public_key')
         signature_b64 = body.get('signature')
         timestamp = body.get('timestamp')
+        client_host = body.get('host', '').strip()
 
         if not all([port, file_name, file_size, peer_public_key_b64, signature_b64, timestamp]):
             raise HTTPException(status_code=400, detail="Missing required fields")
@@ -61,6 +61,9 @@ async def register_fileshare(request: fastapi.Request, file_id: str):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid port, size, or timestamp")
 
+        if client_host and not _SAFE_HOST_RE.match(client_host):
+            raise HTTPException(status_code=400, detail="Invalid host value")
+
         if abs(time.time() - timestamp) > _TIMESTAMP_TOLERANCE_S:
             raise HTTPException(status_code=400, detail="Request timestamp out of acceptable range")
 
@@ -70,9 +73,17 @@ async def register_fileshare(request: fastapi.Request, file_id: str):
         except Exception:
             raise HTTPException(status_code=400, detail="Malformed base64 in peer_public_key or signature")
 
-        message = build_registration_message(file_id, port, file_name, file_size, timestamp)
+        message = build_registration_message(file_id, client_host, port, file_name, file_size, timestamp)
         if not verify(peer_public_key, message, signature):
             raise HTTPException(status_code=403, detail="Signature verification failed")
+
+        # Prefer client-supplied host; fall back to request source IP
+        if client_host:
+            peer_ip = client_host
+        else:
+            peer_ip = request.headers.get('cf-connecting-ip', '') or (request.client.host if request.client else '')
+        if not peer_ip:
+            raise HTTPException(status_code=400, detail="Failed to resolve peer address")
 
         download_url = f"http://{peer_ip}:{port}/{file_id}"
         public_key, private_key = generate_keypair()
