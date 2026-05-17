@@ -12,4 +12,4 @@ EXPOSE 8080 8443
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "main.py", "--server"]
+CMD ["python", "server.py"]
