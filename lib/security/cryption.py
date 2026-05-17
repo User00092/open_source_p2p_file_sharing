@@ -1,79 +1,80 @@
+import os
 import base64
-import typing
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
-from pydantic import ValidationError
-from quantcrypt import kem, errors
-import lib.utils as utils
+
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, PublicFormat, PrivateFormat, NoEncryption, load_der_private_key
+)
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+# Wire format: ephemeral_pubkey (32) | nonce (12) | aesgcm_ciphertext+tag (variable)
+_EPH_PUBKEY_LEN = 32
+_NONCE_LEN = 12
+_HKDF_INFO = b'p2p-file-share-v2'
 
 
-kyber = kem.Kyber()
-AES_BLOCK_SIZE = AES.block_size
-CIPHER_TEXT_LENGTH = 1568
-
-
-class AESCryption:
-    def __init__(self, key: bytes | str):
-        self.key = key.encode() if isinstance(key, str) else key
-
-    @staticmethod
-    def pad(data: str | bytes) -> bytes:
-        pad_len = AES_BLOCK_SIZE - len(data) % AES_BLOCK_SIZE
-        padding = chr(pad_len) * pad_len
-        return data + padding if isinstance(data, str) else data + bytes(padding, 'utf-8')
-
-    @staticmethod
-    def unpad(data: bytes) -> bytes:
-        return data[:-data[-1]]
-
-    def encrypt(self, raw: bytes | str) -> bytes:
-        if isinstance(raw, str):
-            raw = base64.b64decode(raw, validate=True)
-
-        raw = self.pad(raw)
-        iv = get_random_bytes(AES_BLOCK_SIZE)
-        cipher = AES.new(self.key, AES.MODE_GCM, iv)
-        encrypted = cipher.encrypt(raw)
-        return iv + encrypted
-
-    def decrypt(self, enc: bytes | str) -> bytes:
-        if isinstance(enc, str):
-            enc = base64.b64decode(enc, validate=True)
-
-        iv, raw = enc[:AES_BLOCK_SIZE], enc[AES_BLOCK_SIZE:]
-        cipher = AES.new(self.key, AES.MODE_GCM, iv)
-        decrypted = cipher.decrypt(raw)
-        return self.unpad(decrypted)
-
-
-def generate_keypair() -> typing.Tuple[bytes, bytes]:
-    public_key, private_key = kyber.keygen()
-    return public_key, private_key
+def generate_keypair() -> tuple[bytes, bytes]:
+    """Returns (public_key_raw_32b, private_key_der). Same return order as before."""
+    private_key = X25519PrivateKey.generate()
+    public_raw = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    private_der = private_key.private_bytes(Encoding.DER, PrivateFormat.PKCS8, NoEncryption())
+    return public_raw, private_der
 
 
 def encrypt(public_key: bytes | str, plaintext: bytes | str) -> bytes | None:
+    """
+    ECIES: ephemeral X25519 DH + HKDF-SHA256 → AES-256-GCM.
+    Per-chunk ephemeral key provides forward secrecy.
+    """
     try:
-        public_key = base64.b64decode(public_key, validate=True) if isinstance(public_key, str) else public_key
-        plaintext = plaintext.encode() if isinstance(plaintext, str) else plaintext
+        if isinstance(public_key, str):
+            public_key = base64.b64decode(public_key, validate=True)
+        if isinstance(plaintext, str):
+            plaintext = plaintext.encode()
 
-        ciphertext, shared_secret = kyber.encaps(public_key)
-        aes = AESCryption(shared_secret)
-        encrypted_data = aes.encrypt(plaintext)
-        return ciphertext + encrypted_data
-    except (ValidationError, errors.KEMEncapsFailedError) as e:
-        print(f"Encryption error: {e}")
+        server_pub = X25519PublicKey.from_public_bytes(public_key)
+        eph_priv = X25519PrivateKey.generate()
+        eph_pub_raw = eph_priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+        shared = eph_priv.exchange(server_pub)
+        aes_key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=_HKDF_INFO
+        ).derive(shared)
+
+        nonce = os.urandom(_NONCE_LEN)
+        ciphertext_with_tag = AESGCM(aes_key).encrypt(nonce, plaintext, None)
+
+        return eph_pub_raw + nonce + ciphertext_with_tag
+
+    except Exception as exc:
+        print(f"Encryption error: {exc}")
         return None
 
 
 def decrypt(private_key: bytes | str, combined_data: bytes | str) -> bytes | None:
+    """Reverse ECIES — mirrors encrypt() exactly."""
     try:
-        private_key = base64.b64decode(private_key, validate=True) if isinstance(private_key, str) else private_key
-        combined_data = combined_data.encode() if isinstance(combined_data, str) else combined_data
+        if isinstance(private_key, str):
+            private_key = base64.b64decode(private_key, validate=True)
+        if isinstance(combined_data, str):
+            combined_data = combined_data.encode()
 
-        ciphertext, encrypted_data = combined_data[:CIPHER_TEXT_LENGTH], combined_data[CIPHER_TEXT_LENGTH:]
-        shared_secret = kyber.decaps(private_key, ciphertext)
-        aes = AESCryption(shared_secret)
-        return aes.decrypt(encrypted_data)
-    except (ValidationError, errors.KEMDecapsFailedError, errors.CipherStateError) as e:
-        print(f"Decryption error: {e}")
+        eph_pub_raw = combined_data[:_EPH_PUBKEY_LEN]
+        nonce = combined_data[_EPH_PUBKEY_LEN: _EPH_PUBKEY_LEN + _NONCE_LEN]
+        ciphertext_with_tag = combined_data[_EPH_PUBKEY_LEN + _NONCE_LEN:]
+
+        server_priv = load_der_private_key(private_key, password=None)
+        eph_pub = X25519PublicKey.from_public_bytes(eph_pub_raw)
+
+        shared = server_priv.exchange(eph_pub)
+        aes_key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=_HKDF_INFO
+        ).derive(shared)
+
+        return AESGCM(aes_key).decrypt(nonce, ciphertext_with_tag, None)
+
+    except Exception as exc:
+        print(f"Decryption error: {exc}")
         return None
