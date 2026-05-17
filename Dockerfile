@@ -7,8 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# HTTP (no certs). Mount certs at /app/key.pem + /app/cert.pem for TLS 1.3 / port 8443.
-EXPOSE 8080 8443
+EXPOSE 8080
 
 ENV PYTHONUNBUFFERED=1
 
